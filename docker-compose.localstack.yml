@@ -1,0 +1,16 @@
+services:
+  localstack:
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+    container_name: cloud-security-platform-localstack
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      DEBUG: "0"
+      PERSISTENCE: "0"
+      SERVICES: ec2,iam,kms,s3,secretsmanager,sts
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+      start_period: 10s

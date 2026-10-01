@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-platform
+  labels:
+    app.kubernetes.io/name: monitoring-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monitoring-platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monitoring-platform
+    spec:
+      serviceAccountName: monitoring-platform
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: monitoring-platform
+          image: ghcr.io/example/cloud-security-monitoring:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: monitoring-platform
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-platform-default-deny
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: monitoring-platform
+  policyTypes: ["Ingress", "Egress"]

@@ -1,0 +1,11 @@
+aws_region        = "eu-central-1"
+availability_zone = "eu-central-1a"
+environment       = "dev"
+
+operator_principal_arns = [
+  "arn:aws:iam::123456789012:role/platform-engineer"
+]
+
+administrator_principal_arns = [
+  "arn:aws:iam::123456789012:role/terraform-deployer"
+]

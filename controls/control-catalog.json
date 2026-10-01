@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "controls": [
+    {
+      "id": "CSP-SDLC-01",
+      "title": "Critical security findings block deployment",
+      "frameworks": {
+        "NIST-CSF-2.0": ["GV.PO-03", "PR.PS-06"],
+        "CIS-AWS-1.5": ["1.19"]
+      },
+      "implementation": [
+        ".github/workflows/devsecops.yml",
+        "security_platform/scanners/terraform_scanner.py",
+        "security_platform/scanners/kubernetes_scanner.py"
+      ],
+      "runtime_evidence": ["GitHub Actions run URL and six successful security jobs"]
+    },
+    {
+      "id": "CSP-NET-01",
+      "title": "Workloads and databases are segmented",
+      "frameworks": {
+        "NIST-CSF-2.0": ["PR.IR-01"],
+        "AWS-FSBP": ["EC2.2", "RDS.2"]
+      },
+      "implementation": ["examples/aws-security-lab/network.tf"],
+      "runtime_evidence": ["VPC route tables, subnet classification and security-group rules"]
+    },
+    {
+      "id": "CSP-IAM-01",
+      "title": "Temporary credentials and least privilege are enforced",
+      "frameworks": {
+        "NIST-CSF-2.0": ["PR.AA-05"],
+        "CIS-AWS-1.5": ["1.4", "1.16"]
+      },
+      "implementation": [
+        "examples/aws-security-lab/iam.tf",
+        "modules/aws-secure-backup/iam.tf"
+      ],
+      "runtime_evidence": ["IAM role trust policies and Access Analyzer review"]
+    },
+    {
+      "id": "CSP-DATA-01",
+      "title": "Sensitive data and backups are encrypted",
+      "frameworks": {
+        "NIST-CSF-2.0": ["PR.DS-01", "PR.DS-11"],
+        "AWS-FSBP": ["EC2.3", "RDS.3"]
+      },
+      "implementation": [
+        "modules/aws-secure-backup/main.tf",
+        "examples/aws-security-lab/data.tf"
+      ],
+      "runtime_evidence": ["KMS key metadata, encrypted RDS/EBS configuration and recovery-point inventory"]
+    },
+    {
+      "id": "CSP-DE-01",
+      "title": "CloudTrail abuse is detected and investigated",
+      "frameworks": {
+        "NIST-CSF-2.0": ["DE.CM-01", "RS.AN-03"],
+        "CIS-AWS-1.5": ["3.1", "3.2"]
+      },
+      "implementation": [
+        "security_platform/investigation/cloudtrail_investigator.py",
+        "docs/playbooks/credential-compromise.md",
+        "docs/playbooks/privilege-escalation.md",
+        "docs/playbooks/exfiltration-and-evidence-destruction.md"
+      ],
+      "runtime_evidence": ["CloudTrail alert JSON and incident timeline"]
+    },
+    {
+      "id": "CSP-CONTAINER-01",
+      "title": "Containers and Kubernetes workloads are hardened",
+      "frameworks": {
+        "NIST-CSF-2.0": ["PR.PS-01", "PR.PS-06"],
+        "CIS-Kubernetes-1.9": ["5.1", "5.2"]
+      },
+      "implementation": [
+        "monitoring-platform/Dockerfile",
+        "monitoring-platform/k8s/deployment.yaml",
+        "monitoring-platform/k8s/rbac.yaml",
+        "security_platform/scanners/kubernetes_scanner.py"
+      ],
+      "runtime_evidence": ["Container image digest, scan report and admitted Kubernetes manifests"]
+    },
+    {
+      "id": "CSP-ARCH-01",
+      "title": "Threat model and Zero Trust decisions are maintained",
+      "frameworks": {
+        "NIST-CSF-2.0": ["ID.RA-03", "GV.RM-01"],
+        "NIST-800-207": ["Policy Engine", "Policy Enforcement Point"]
+      },
+      "implementation": [
+        "docs/threat-models/stride.md",
+        "docs/threat-models/zero-trust.md"
+      ],
+      "runtime_evidence": ["Reviewed threat-model commit and architecture decision record"]
+    }
+  ]
+}

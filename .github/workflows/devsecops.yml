@@ -1,0 +1,119 @@
+name: six-stage-devsecops
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: "1 / Secrets"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Block detected secrets
+        run: >-
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a
+          detect --source=/repo --redact --no-banner --exit-code=1
+
+  sast:
+    name: "2 / SAST"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Block high-confidence code findings
+        run: >-
+          docker run --rm -v "$PWD:/src" semgrep/semgrep:1.178.0@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b
+          semgrep scan --config p/default --error --severity ERROR
+          --exclude .terraform --exclude tests/fixtures /src
+
+  dependencies:
+    name: "3 / Dependencies"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Block critical dependency vulnerabilities
+        run: >-
+          docker run --rm -v "$PWD:/work" aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+          fs --scanners vuln --severity CRITICAL --exit-code 1
+          --skip-dirs .terraform /work
+
+  dockerfiles:
+    name: "4 / Dockerfiles"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Enforce Dockerfile hardening
+        run: >-
+          docker run --rm -i hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
+          hadolint --failure-threshold error -
+          < monitoring-platform/Dockerfile
+
+  kubernetes:
+    name: "5 / Kubernetes and RBAC"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install --require-hashes -r requirements-dev.txt
+      - name: Block high-risk workload and RBAC findings
+        run: >-
+          python -m security_platform.scanners.kubernetes_scanner monitoring-platform/k8s
+          --fail-on HIGH --format json --output reports/kubernetes.json
+
+  terraform:
+    name: "6 / Terraform"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.3
+      - name: Run custom 21-rule scanner
+        run: >-
+          python -m security_platform.scanners.terraform_scanner modules examples
+          --fail-on HIGH --format json --output reports/terraform.json
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+      - name: Validate and test secure backup module
+        run: |
+          terraform -chdir=modules/aws-secure-backup init -backend=false
+          terraform -chdir=modules/aws-secure-backup validate
+          terraform -chdir=modules/aws-secure-backup test
+      - name: Validate AWS security lab
+        run: |
+          terraform -chdir=examples/aws-security-lab init -backend=false
+          terraform -chdir=examples/aws-security-lab validate
+
+  deployment-gate:
+    name: Deployment security gate
+    if: always()
+    needs: [secrets, sast, dependencies, dockerfiles, kubernetes, terraform]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all six controls
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          test "$RESULTS" = "success,success,success,success,success,success"
+          echo "All six security stages passed; deployment may proceed."

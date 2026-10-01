@@ -1,0 +1,28 @@
+{
+  "Records": [
+    {
+      "eventTime": "2026-09-01T10:00:00Z",
+      "eventName": "CreateAccessKey",
+      "sourceIPAddress": "198.51.100.10",
+      "userIdentity": {"type": "IAMUser", "arn": "arn:aws:iam::123456789012:user/alice"}
+    },
+    {
+      "eventTime": "2026-09-01T10:01:00Z",
+      "eventName": "AttachRolePolicy",
+      "sourceIPAddress": "198.51.100.10",
+      "userIdentity": {"type": "IAMUser", "arn": "arn:aws:iam::123456789012:user/alice"}
+    },
+    {
+      "eventTime": "2026-09-01T10:02:00Z",
+      "eventName": "ModifySnapshotAttribute",
+      "sourceIPAddress": "198.51.100.10",
+      "userIdentity": {"type": "AssumedRole", "arn": "arn:aws:sts::123456789012:assumed-role/admin/session"}
+    },
+    {
+      "eventTime": "2026-09-01T10:03:00Z",
+      "eventName": "StopLogging",
+      "sourceIPAddress": "198.51.100.10",
+      "userIdentity": {"type": "AssumedRole", "arn": "arn:aws:sts::123456789012:assumed-role/admin/session"}
+    }
+  ]
+}
