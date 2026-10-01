@@ -1,0 +1,47 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role_policy.admin",
+          "type": "aws_iam_role_policy",
+          "values": {
+            "policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+          }
+        },
+        {
+          "address": "aws_s3_bucket.encrypted_only",
+          "type": "aws_s3_bucket",
+          "values": {"bucket": "evaluated-insecure-bucket"}
+        },
+        {
+          "address": "aws_s3_bucket_server_side_encryption_configuration.encrypted_only",
+          "type": "aws_s3_bucket_server_side_encryption_configuration",
+          "values": {"bucket": "evaluated-insecure-bucket"}
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role_policy.admin",
+          "type": "aws_iam_role_policy",
+          "expressions": {"policy": {"references": ["local.admin_policy"]}}
+        },
+        {
+          "address": "aws_s3_bucket.encrypted_only",
+          "type": "aws_s3_bucket",
+          "expressions": {}
+        },
+        {
+          "address": "aws_s3_bucket_server_side_encryption_configuration.encrypted_only",
+          "type": "aws_s3_bucket_server_side_encryption_configuration",
+          "expressions": {"bucket": {"references": ["aws_s3_bucket.encrypted_only.id"]}}
+        }
+      ]
+    }
+  }
+}

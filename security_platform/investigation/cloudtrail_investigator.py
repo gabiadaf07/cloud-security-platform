@@ -25,6 +25,7 @@ class Alert:
     source_ip: str
     message: str
     source_file: str
+    classification: str = "triage-signal"
 
 
 PRIVILEGE_EVENTS = {
@@ -57,26 +58,69 @@ DESTRUCTION_EVENTS = {
     "StopLogging",
     "UpdateTrail",
 }
+ROLE_BEARING_EVENTS = {
+    "CreateCluster",
+    "CreateFunction",
+    "CreateJobDefinition",
+    "CreateNotebookInstance",
+    "CreateService",
+    "CreateStateMachine",
+    "RegisterTaskDefinition",
+    "UpdateFunctionConfiguration",
+    "UpdateService",
+    "UpdateStateMachine",
+}
+ROLE_PARAMETER_NAMES = {
+    "executionrolearn",
+    "jobrolearn",
+    "role",
+    "rolearn",
+    "servicerolearn",
+    "taskrolearn",
+}
+
+
+def object_field(event: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a CloudTrail object field even when AWS serializes it as null."""
+    value = event.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def principal(event: dict[str, Any]) -> str:
-    identity = event.get("userIdentity", {}) or {}
+    identity = object_field(event, "userIdentity")
+    session_context = identity.get("sessionContext")
+    session_context = session_context if isinstance(session_context, dict) else {}
+    session_issuer = session_context.get("sessionIssuer")
+    session_issuer = session_issuer if isinstance(session_issuer, dict) else {}
     return (
         identity.get("arn")
         or identity.get("principalId")
-        or identity.get("sessionContext", {}).get("sessionIssuer", {}).get("arn")
+        or session_issuer.get("arn")
         or "unknown"
     )
 
 
 def mfa_authenticated(event: dict[str, Any]) -> bool:
-    value = (
-        event.get("userIdentity", {})
-        .get("sessionContext", {})
-        .get("attributes", {})
-        .get("mfaAuthenticated")
-    )
+    identity = object_field(event, "userIdentity")
+    session_context = identity.get("sessionContext")
+    session_context = session_context if isinstance(session_context, dict) else {}
+    attributes = session_context.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    value = attributes.get("mfaAuthenticated")
     return str(value).lower() == "true"
+
+
+def contains_role_reference(value: Any) -> bool:
+    """Detect a role-bearing request parameter on an API call that can pass a role."""
+    if isinstance(value, dict):
+        return any(
+            (str(key).lower() in ROLE_PARAMETER_NAMES and isinstance(item, str) and bool(item))
+            or contains_role_reference(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(contains_role_reference(item) for item in value)
+    return False
 
 
 def alert(event: dict[str, Any], path: Path, rule_id: str, category: str, severity: str, message: str) -> Alert:
@@ -96,10 +140,12 @@ def alert(event: dict[str, Any], path: Path, rule_id: str, category: str, severi
 def investigate_event(event: dict[str, Any], path: Path) -> list[Alert]:
     alerts: list[Alert] = []
     name = str(event.get("eventName", ""))
-    identity_type = event.get("userIdentity", {}).get("type")
+    identity_type = object_field(event, "userIdentity").get("type")
+    response_elements = object_field(event, "responseElements")
+    request_parameters = object_field(event, "requestParameters")
 
     if name == "ConsoleLogin" and (
-        event.get("responseElements", {}).get("ConsoleLogin") == "Failure" or event.get("errorCode")
+        response_elements.get("ConsoleLogin") == "Failure" or event.get("errorCode")
     ):
         alerts.append(alert(event, path, "CSP-CT-001", "credential-abuse", "HIGH", "Failed console authentication."))
 
@@ -112,20 +158,58 @@ def investigate_event(event: dict[str, Any], path: Path) -> list[Alert]:
         alerts.append(alert(event, path, "CSP-CT-003", "credential-abuse", "HIGH", "Role assumed without MFA."))
 
     if name in PRIVILEGE_EVENTS:
-        alerts.append(alert(event, path, "CSP-CT-004", "privilege-escalation", "CRITICAL", "IAM permissions were elevated or trust was changed."))
+        alerts.append(
+            alert(
+                event,
+                path,
+                "CSP-CT-004",
+                "privilege-escalation",
+                "HIGH",
+                "IAM permission or trust-policy change observed; validate the diff and authorization context.",
+            )
+        )
 
-    if name == "PassRole":
-        alerts.append(alert(event, path, "CSP-CT-005", "privilege-escalation", "HIGH", "IAM role was passed to a service."))
+    # iam:PassRole is a permission check, not a standalone API event. Detect
+    # service operations that carry a role instead.
+    if name in ROLE_BEARING_EVENTS and contains_role_reference(request_parameters):
+        alerts.append(
+            alert(
+                event,
+                path,
+                "CSP-CT-005",
+                "privilege-escalation",
+                "HIGH",
+                "Service operation supplied an IAM role; review iam:PassRole authorization and the target service.",
+            )
+        )
 
     if name in EXFILTRATION_EVENTS:
-        severity = "HIGH" if name == "GetObject" else "CRITICAL"
-        alerts.append(alert(event, path, "CSP-CT-006", "exfiltration", severity, "Data-read or resource-sharing activity requires review."))
+        severity = "LOW" if name == "GetObject" else "HIGH"
+        alerts.append(
+            alert(
+                event,
+                path,
+                "CSP-CT-006",
+                "exfiltration",
+                severity,
+                "Data-read or resource-sharing activity is a triage signal; correlate it with volume, identity, network and baseline context.",
+            )
+        )
 
     if name in DESTRUCTION_EVENTS:
-        alerts.append(alert(event, path, "CSP-CT-007", "evidence-destruction", "CRITICAL", "Logging, encryption, or recovery evidence was modified or deleted."))
+        alerts.append(
+            alert(
+                event,
+                path,
+                "CSP-CT-007",
+                "evidence-destruction",
+                "HIGH",
+                "Logging, encryption or recovery configuration changed; validate authorization and resulting control state.",
+            )
+        )
 
-    if event.get("userIdentity", {}).get("type") == "Root":
-        alerts.append(alert(event, path, "CSP-CT-008", "credential-abuse", "CRITICAL", "Root identity used for an API operation."))
+    if identity_type == "Root":
+        alerts.append(alert(event, path, "CSP-CT-008", "credential-abuse", "CRITICAL", "Root identity use observed; validate whether this exceptional operation was authorized."))
 
     return alerts
 
@@ -168,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered = json.dumps({"alerts": [asdict(item) for item in alerts]}, indent=2)
     else:
         rendered = "\n".join(
-            f"{item.severity} {item.rule_id} {item.event_time} {item.category} {item.principal} - {item.message}"
+            f"{item.severity} {item.rule_id} {item.event_time} {item.category} {item.classification} {item.principal} - {item.message}"
             for item in alerts
         ) or "No suspicious CloudTrail events detected."
     if args.output:

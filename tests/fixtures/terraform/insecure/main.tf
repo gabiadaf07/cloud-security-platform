@@ -8,7 +8,7 @@ resource "aws_db_instance" "public" {
   storage_encrypted       = false
   deletion_protection     = false
   backup_retention_period = 0
-  password                = "NotARealPassword123"
+  password                = "example"
 }
 
 resource "aws_ebs_volume" "plain" {

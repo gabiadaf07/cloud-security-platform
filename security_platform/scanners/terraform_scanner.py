@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Dependency-free Terraform security scanner for the platform's core controls.
+"""Terraform source and evaluated-plan security scanner for core controls.
 
-The parser intentionally handles literal Terraform resource blocks. Findings
-that require evaluated modules or variable values should also be covered by a
-plan-aware scanner such as Trivy in CI.
+Source scanning gives fast feedback for literal resource blocks. ``--plan-json``
+accepts the output of ``terraform show -json`` so policies produced by
+``jsonencode``, locals, variables and modules are inspected after evaluation.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 SEVERITY_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
@@ -42,6 +42,16 @@ class Finding:
 RESOURCE_START = re.compile(
     r'\bresource\s+"(?P<type>[A-Za-z0-9_]+)"\s+"(?P<name>[A-Za-z0-9_-]+)"\s*\{'
 )
+
+# These APIs do not support resource-level permissions. A wildcard Resource is
+# therefore not excessive when every action in the statement is in this small,
+# reviewed set. This is deliberately an allowlist rather than a generic
+# suppression for read/list actions.
+GLOBAL_RESOURCE_ACTIONS = {
+    "ecr:GetAuthorizationToken",
+    "s3:ListAllMyBuckets",
+    "sts:GetCallerIdentity",
+}
 
 
 def strip_comments(source: str) -> str:
@@ -203,6 +213,14 @@ def scan_block(block: Block, all_blocks: list[Block]) -> list[Finding]:
         ]
         if not encryption_blocks:
             add("CSP-TF-010", "HIGH", "S3 bucket has no server-side encryption configuration.")
+        public_access_blocks = [
+            item
+            for item in all_blocks
+            if item.resource_type == "aws_s3_bucket_public_access_block"
+            and reference in item.text
+        ]
+        if not public_access_blocks:
+            add("CSP-TF-009", "HIGH", "S3 bucket has no public-access block.")
 
     if kind == "aws_kms_key" and literal_bool(text, "enable_key_rotation") is not True:
         add("CSP-TF-011", "HIGH", "KMS automatic key rotation is not enabled.")
@@ -257,20 +275,164 @@ def terraform_files(paths: Iterable[Path]) -> list[Path]:
     return sorted(files)
 
 
-def scan(paths: Iterable[Path]) -> list[Finding]:
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _plan_resources(module: dict[str, Any]) -> list[dict[str, Any]]:
+    resources = [item for item in module.get("resources", []) if isinstance(item, dict)]
+    for child in module.get("child_modules", []):
+        if isinstance(child, dict):
+            resources.extend(_plan_resources(child))
+    return resources
+
+
+def _configuration_references(plan: dict[str, Any]) -> dict[str, set[str]]:
+    references: dict[str, set[str]] = {}
+
+    def visit(module: dict[str, Any]) -> None:
+        for resource in module.get("resources", []):
+            if not isinstance(resource, dict):
+                continue
+            address = resource.get("address")
+            expressions = resource.get("expressions", {})
+            if not isinstance(address, str) or not isinstance(expressions, dict):
+                continue
+            found: set[str] = set()
+            for expression in expressions.values():
+                if isinstance(expression, dict):
+                    found.update(
+                        item
+                        for item in expression.get("references", [])
+                        if isinstance(item, str)
+                    )
+            references[address] = found
+        for child in module.get("module_calls", {}).values():
+            if isinstance(child, dict) and isinstance(child.get("module"), dict):
+                visit(child["module"])
+
+    root = plan.get("configuration", {}).get("root_module", {})
+    if isinstance(root, dict):
+        visit(root)
+    return references
+
+
+def _policy_statements(policy: Any) -> list[dict[str, Any]]:
+    if isinstance(policy, str):
+        try:
+            policy = json.loads(policy)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(policy, dict):
+        return []
+    statements = policy.get("Statement", [])
+    if isinstance(statements, dict):
+        statements = [statements]
+    return [item for item in statements if isinstance(item, dict)] if isinstance(statements, list) else []
+
+
+def scan_plan(path: Path) -> list[Finding]:
+    """Inspect an evaluated ``terraform show -json`` document."""
+    source = sys.stdin.read() if str(path) == "-" else path.read_text(encoding="utf-8")
+    payload = json.loads(source)
+    root = payload.get("planned_values", {}).get("root_module", {})
+    if not isinstance(root, dict):
+        raise ValueError(f"{path} is not a Terraform plan JSON document")
+    resources = _plan_resources(root)
+    references = _configuration_references(payload)
+    findings: list[Finding] = []
+
+    def add(resource: dict[str, Any], rule_id: str, severity: str, message: str) -> None:
+        address = str(resource.get("address", resource.get("type", "unknown")))
+        findings.append(Finding(rule_id, severity, message, str(path), 1, address))
+
+    iam_types = {"aws_iam_policy", "aws_iam_role_policy", "aws_iam_user_policy"}
+    for resource in resources:
+        if resource.get("type") not in iam_types:
+            continue
+        values = resource.get("values", {})
+        policy = values.get("policy") if isinstance(values, dict) else None
+        for statement in _policy_statements(policy):
+            if str(statement.get("Effect", "Allow")).lower() != "allow":
+                continue
+            actions = _string_list(statement.get("Action"))
+            resource_arns = _string_list(statement.get("Resource"))
+            wildcard_actions = [action for action in actions if "*" in action]
+            if wildcard_actions:
+                severity = "CRITICAL" if "*" in wildcard_actions else "HIGH"
+                add(resource, "CSP-TF-015", severity, "Evaluated IAM policy grants wildcard actions.")
+            if "*" in resource_arns and any(
+                action not in GLOBAL_RESOURCE_ACTIONS for action in actions
+            ):
+                add(
+                    resource,
+                    "CSP-TF-016",
+                    "HIGH",
+                    "Evaluated IAM policy uses a wildcard resource for an action that supports or requires review of resource scoping.",
+                )
+
+    buckets = [item for item in resources if item.get("type") == "aws_s3_bucket"]
+    access_blocks = [
+        item for item in resources if item.get("type") == "aws_s3_bucket_public_access_block"
+    ]
+    for bucket in buckets:
+        address = str(bucket.get("address", ""))
+        bucket_name = (bucket.get("values") or {}).get("bucket")
+        matching = []
+        for access_block in access_blocks:
+            block_address = str(access_block.get("address", ""))
+            block_bucket = (access_block.get("values") or {}).get("bucket")
+            block_references = references.get(block_address, set())
+            if any(item == address or item.startswith(f"{address}.") for item in block_references) or (
+                bucket_name is not None and block_bucket == bucket_name
+            ):
+                matching.append(access_block)
+        if not matching:
+            add(bucket, "CSP-TF-009", "HIGH", "Evaluated S3 bucket has no public-access block.")
+            continue
+        required = ("block_public_acls", "block_public_policy", "ignore_public_acls", "restrict_public_buckets")
+        if not any(
+            all((block.get("values") or {}).get(key) is True for key in required)
+            for block in matching
+        ):
+            add(bucket, "CSP-TF-009", "HIGH", "Evaluated S3 public-access block is incomplete.")
+
+    return findings
+
+
+def scan(paths: Iterable[Path], plan_paths: Iterable[Path] = ()) -> list[Finding]:
     blocks = [block for path in terraform_files(paths) for block in extract_blocks(path)]
-    return [finding for block in blocks for finding in scan_block(block, blocks)]
+    source_findings = [finding for block in blocks for finding in scan_block(block, blocks)]
+    plan_findings = [finding for path in plan_paths for finding in scan_plan(path)]
+    return source_findings + plan_findings
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan Terraform for cloud security misconfigurations.")
-    parser.add_argument("paths", nargs="+", type=Path)
+    parser.add_argument("paths", nargs="*", type=Path)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--fail-on", choices=tuple(SEVERITY_ORDER), default="HIGH")
+    parser.add_argument(
+        "--plan-json",
+        action="append",
+        default=[],
+        type=Path,
+        help="Evaluated plan produced by: terraform show -json PLAN > plan.json (repeatable)",
+    )
     args = parser.parse_args(argv)
+    if not args.paths and not args.plan_json:
+        parser.error("provide at least one Terraform source path or --plan-json")
 
-    findings = scan(args.paths)
+    try:
+        findings = scan(args.paths, args.plan_json)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"Terraform scan failed: {error}", file=sys.stderr)
+        return 2
     if args.format == "json":
         rendered = json.dumps({"findings": [asdict(item) for item in findings]}, indent=2)
     else:

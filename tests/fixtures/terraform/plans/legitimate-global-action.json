@@ -1,0 +1,53 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role_policy.identity",
+          "type": "aws_iam_role_policy",
+          "values": {
+            "policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:GetCallerIdentity\",\"Resource\":\"*\"}]}"
+          }
+        },
+        {
+          "address": "aws_s3_bucket.secure",
+          "type": "aws_s3_bucket",
+          "values": {"bucket": "evaluated-secure-bucket"}
+        },
+        {
+          "address": "aws_s3_bucket_public_access_block.secure",
+          "type": "aws_s3_bucket_public_access_block",
+          "values": {
+            "bucket": "evaluated-secure-bucket",
+            "block_public_acls": true,
+            "block_public_policy": true,
+            "ignore_public_acls": true,
+            "restrict_public_buckets": true
+          }
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role_policy.identity",
+          "type": "aws_iam_role_policy",
+          "expressions": {"policy": {"references": ["local.identity_policy"]}}
+        },
+        {
+          "address": "aws_s3_bucket.secure",
+          "type": "aws_s3_bucket",
+          "expressions": {}
+        },
+        {
+          "address": "aws_s3_bucket_public_access_block.secure",
+          "type": "aws_s3_bucket_public_access_block",
+          "expressions": {"bucket": {"references": ["aws_s3_bucket.secure.id"]}}
+        }
+      ]
+    }
+  }
+}

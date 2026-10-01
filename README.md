@@ -14,6 +14,10 @@ source change
     │                                                                  │
     └──────────────────── deployment security gate ────────────────────┘
                                       │
+                     build → GHCR publish → ephemeral deploy
+                                      │
+                              /healthz smoke test
+                                      │
                            Monitoring Platform
                                       │
                     segmented AWS lab + secure backup
@@ -23,7 +27,7 @@ source change
 
 | Capability | Reusable implementation | Demonstration |
 |---|---|---|
-| Six-stage DevSecOps gate | [GitHub workflow](.github/workflows/devsecops.yml) | Every stage exits non-zero on critical/high findings |
+| Six-stage DevSecOps gate | [GitHub workflow](.github/workflows/devsecops.yml) | Successful gate builds a commit-tagged GHCR image, deploys it ephemerally and smoke-tests `/healthz` |
 | Secure AWS architecture | [AWS security lab](examples/aws-security-lab) | Segmented VPC, isolated DB subnets, STS role, KMS and RDS-managed Secrets Manager secret |
 | Terraform misconfiguration detection | [21-rule scanner](security_platform/scanners/terraform_scanner.py) | Tests prove 12+ distinct categories, including public databases, open ingress and wildcard IAM |
 | Secure backup control | [AWS Backup module](modules/aws-secure-backup) | Encrypted EBS example, Vault Lock, least-privilege roles and allowed/denied test |
@@ -40,6 +44,10 @@ python3 -m unittest discover -s tests -v
 
 # The custom gates used by CI
 python3 -m security_platform.scanners.terraform_scanner modules examples --fail-on HIGH
+
+# Scan evaluated values, including jsonencode/locals/module output
+terraform show -json saved.tfplan | \
+  python3 -m security_platform.scanners.terraform_scanner --plan-json - --fail-on HIGH
 python3 -m security_platform.scanners.kubernetes_scanner monitoring-platform/k8s --fail-on HIGH
 
 # Produce the compliance evidence manifest

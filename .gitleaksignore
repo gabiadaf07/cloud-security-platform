@@ -1,0 +1,4 @@
+# Confirmed synthetic value in an intentionally insecure regression fixture.
+# The fixture now uses a non-secret marker; this fingerprint only suppresses
+# the already-published historical commit without weakening path/rule coverage.
+816942a39a3575e425ca955d9efa51e2d02db91a:tests/fixtures/terraform/insecure/main.tf:hashicorp-tf-password:11
